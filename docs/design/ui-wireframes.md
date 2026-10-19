@@ -1,169 +1,159 @@
 # UI wireframes (text)
 
-Status: M0 proposal. PatternFly 6 components named in brackets. All pages are keyboard
-navigable; every disabled control has a tooltip/inline reason; status is never conveyed by
-colour alone (icon + text).
+Status: Accepted at M0 closeout (2026-10-19). PatternFly 6 components implied. All pages are
+keyboard navigable; every disabled control states why; status is never conveyed by colour
+alone. Copy rules: never "Protected", never "rebuild"/"resilver"; parity "reflects the last
+sync (point in time)"; typed confirmation is described as a safeguard, not as security.
 
 ## Global frame
-
 ```
 ┌ Cockpit nav ─┐┌──────────────────────────────────────────────────────────────────────┐
-│ …            ││ Pool Manager                                  [Admin access: ON  🔓] │
-│ Storage      ││ [Tabs] Overview | Disks | Pools | Parity | Operations | Shares |      │
-│ ▶ Pool Mgr   ││        Schedules | Settings & Diagnostics                            │
-│ …            ││ ─────────────────────────────────────────────────────────────────────│
-└──────────────┘│ [Alert banner, sticky, only when critical]                           │
-                │  ⛔ Data disk "d2" expected at /mnt/disk2 is NOT mounted.             │
-                │     Scheduled sync is suspended. The directory exists but is empty —  │
-                │     that is the root filesystem, not your disk.  [View details]       │
+│ …            ││ Storage Manager                                [Admin access: ON 🔓] │
+│ Storage ↗    ││ Overview | Disks | Pools | Parity | Operations | Shares | Schedules |│
+│ ▶ Storage Mgr││ Settings & Diagnostics                                               │
+└──────────────┘│ [Sticky critical banner — only when critical]                        │
+                │ ⛔ Disk "d2" (pool media, array main) disappeared at 14:02.            │
+                │    New files now go to other disks. SnapRAID sync/scrub suspended.   │
+                │    Files on d2 are invisible, not deleted — clients and apps may     │
+                │    react as if they were deleted.  [Details] [Recovery readiness…]   │
                 └──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## First run
-
 ```
-┌ Welcome ─────────────────────────────────────────────────────────────────────┐
-│ Detected on this host                                                         │
-│   mergerfs 2.40.2 ✔   snapraid 13.0 ✔   smartctl ✔   Samba ✔   NFS server ✖  │
-│   Existing: 1 mergerfs mount (/srv/pool, from /etc/fstab)                     │
-│             1 SnapRAID config (/etc/snapraid.conf, 4 data, 1 parity)          │
-│             3 Samba shares (2 managed by "File Sharing" plugin)               │
-│                                                                               │
-│ (●) Inspect existing setup   — read-only; nothing on this host is changed     │
-│ ( ) Set up new array         — guided; you will review every change first     │
-│                                                    [Continue]                 │
-│ ℹ This plugin never takes over existing configuration unless you choose       │
-│   "Import" later, which first makes a backup and shows the exact diff.        │
-└───────────────────────────────────────────────────────────────────────────────┘
+Detected: mergerfs 2.40.2 ✔  snapraid 13.0 ✔  smartctl ✔  Samba ✔  NFS ✖  Cockpit Storage ✔
+Existing: 2 mergerfs pools · 1 SnapRAID array · 5 Samba shares (3 managed by File Sharing)
+(●) Inspect existing setup — read-only; nothing on this host changes
+( ) Set up something new  — choose: [ ] a pool  [ ] a parity array  (either, both, neither)
+ℹ Pools and parity are independent. You can use either one without the other.
 ```
 
-## Overview
-
+## Overview (aggregates by object; no single-array assumption)
 ```
-┌ Capacity ─────────────────────┐ ┌ Parity ──────────────────────────────────────┐
-│ Usable data   38.2 / 48.0 TB  │ │ Parity is snapshot-based.                     │
-│ (4 data branches; parity not  │ │ Last successful sync: 2026-10-18 03:12 (23 h) │
-│  counted)                     │ │ Changes since then: 1,204 added, 12 removed   │
-│ Parity disks  1 × 16 TB       │ │   → not protected until next sync             │
-└───────────────────────────────┘ │ Scrub coverage: 61% · oldest block 41 days    │
-┌ Health ───────────────────────┐ │ [Review changes]  [Sync…]                     │
-│ ⚠ d3  SMART: 8 reallocated     │ └──────────────────────────────────────────────┘
-│ ✔ others OK · temps 31–38 °C  │ ┌ Active tasks ────────────────────────────────┐
-└───────────────────────────────┘ │ ▸ scrub (array: main)  42% · ETA 1 h 10 m    │
-┌ Config & backups ─────────────┐ └──────────────────────────────────────────────┘
-│ snapraid.conf  external (read │
-│ only) · last backup: none     │
-└───────────────────────────────┘
+Pools                                         Parity arrays
+ media  /srv/media  ⚠ degraded (1/4 missing)   main (/etc/snapraid.conf) ⏸ sync suspended
+ scratch /srv/scratch ✔ (no parity)            Last completed sync: 2026-10-18 03:12 (high)
+                                               Changes since: 1,204 added · 12 removed
+                                               Parity reflects the last sync (point in time).
+Health: ⚠ d3 SMART pre-fail (reallocated 8)    Active jobs: scrub main 42% · ETA 1 h 10 m
 ```
 
-## Disks  [Toolbar + Table, expandable rows]
-
+## Disks
 ```
-Filter: [role ▾] [health ▾] [search…]                      Group by: (●) physical ( ) role
-┌──┬──────────────────────────────┬────────┬───────┬──────┬─────────┬────────┬──────────┐
-│  │ Disk (stable ID)             │ Role   │ Size  │ Free │ Health  │ Temp   │ Mount    │
-├──┼──────────────────────────────┼────────┼───────┼──────┼─────────┼────────┼──────────┤
-│▸ │ ata-WDC_WD120…_8CK2        sdb│ data d1│ 12 TB │ 3.1T │ ✔ OK    │ 34 °C  │/mnt/disk1│
-│▾ │ ata-ST16000…_ZL2A          sdc│ parity │ 16 TB │ 0.9T │ ✔ OK    │ 36 °C  │/mnt/par1 │
-│  │   Partition part1 · ext4 · UUID 5f1e… · label PARITY1                                │
-│  │   Mount source verified ✔ (UUID matches) · origin: /etc/fstab (external)            │
-│  │   SMART source: smartctl 7.4, direct ATA                                             │
-│  │   Actions: [Add to pool] disabled — "Parity disks cannot be pool branches."          │
-│▸ │ usb-JMicron_…_0000         sdf│ —      │ 4 TB  │ —    │ ? n/a   │ —      │ —        │
-│  │   ⚠ inspect-only: USB bridge reports no unique serial                               │
-│▸ │ nvme-Samsung_990…          nvme0n1│ system│ 1 TB│ —  │ ✔       │ 41 °C  │ /        │
-│  │   ⛔ excluded: contains root filesystem                                              │
-└──┴──────────────────────────────┴────────┴───────┴──────┴─────────┴────────┴──────────┘
+Filter [role ▾][health ▾][search…]        [Open in Storage ↗] (shown only if Cockpit Storage installed)
+Disk (stable ID)                     Roles                         Size  Free  Health Temp
+▸ ata-WDC_WD120…_8CK2  (sdb)         branch of media · data d1@main 12 TB 3.1T  ✔     34 °C
+▸ ata-ST16000…_ZL2A    (sdc)         parity 1 @main                 16 TB 0.9T  ✔     36 °C
+▸ usb-JMicron_…        (sdf)         —  ⚠ inspect-only: no unique serial
+▸ nvme-Samsung_990…    (nvme0n1)     system ⛔ excluded: root filesystem
+Expanded row: partitions, fs UUID, mount source verified ✔, mount origin (fstab line 14,
+external), SMART source, actions with reasons ("Partition/format in Cockpit Storage ↗").
 ```
 
-## Pools
-
+## Pools (list of all pools; each independent)
 ```
-Pool /srv/pool    ownership: external (/etc/fstab line 14)    state: ⚠ degraded
-Configured branches                Live branches              Identity
-  /mnt/disk1   RW                   /mnt/disk1 ✔               UUID 1a2b… ✔
-  /mnt/disk2   RW                   /mnt/disk2 ✖ not mounted   ⛔ bare dir on root fs
-  /mnt/disk3   RW                   /mnt/disk3 ✔               UUID 9c8d… ✔
-Policy: category.create = pfrd (default)  [ℹ what this means]
-  "Picks a branch at random, weighted by free space."
-minfreespace: 4G (default)
-▸ Advanced options (12)        ▸ Show source config line        [Import as managed…]
-```
-
-## Parity
-
-```
-Array "main"  config /etc/snapraid.conf (external · lossless round-trip ✔)
-SnapRAID 13.0 · output parser: text (best-effort) ℹ
-Data   d1 → /mnt/disk1 ✔   d2 → /mnt/disk2 ⛔ not mounted   d3 → /mnt/disk3 ✔
-Parity 1-parity → /mnt/par1/snapraid.parity  ✔ ≥ largest data disk
-Content /var/snapraid.content (system disk) ✔ · /mnt/disk1/.snapraid.content ✔
-        ✔ 2 copies on 2 different disks (minimum for 1-parity is parity levels + 1 = 2)
-Rules  exclude *.unrecoverable · exclude /tmp/ … (6)  ▸ view
-Commands
-  [Status] [Diff] [Scrub…] [Check…] [Sync…] disabled:
-      "Sync blocked: data disk d2 not mounted. Syncing now would record its files
-       as deleted and destroy your ability to recover them."
-  Fix / recovery lives in Operations → Recover a failed disk. There is no "repair all".
+media  /srv/media   ownership: managed   state: ⚠ degraded   guard: L1 ✔ (degraded allowed)
+  Branch        Mode  Mounted  Identity           Linked to
+  /mnt/disk1    RW    ✔        UUID 1a2b… ✔       data d1 @ main
+  /mnt/disk2    NC*   ✖        —                  data d2 @ main
+      * set to no-create automatically at 14:02 — [Re-enable after verification…]
+  /mnt/disk3    RW    ✔        UUID 9c8d… ✔       data d3 @ main
+  Policy category.create = pfrd ℹ   minfreespace 4G   ▸ Advanced   ▸ Source config
+scratch  /srv/scratch  ownership: external (fstab line 22)  state: ✔  guard: ⚠ L1 missing
+  ⚠ If a branch disappears, writes may land on the system disk. [Explain] [Plan guard setup…]
 ```
 
-## Operations (wizard catalogue)
-
+## Parity (list of all arrays; each independent)
 ```
-Choose a task                                         Risk
-  ○ Add a disk that already has data (adopt)          Low  · no formatting
-  ○ Initialize a blank disk                           ⛔ High · erases the selected disk
-  ○ Add a branch to a pool                            Low
-  ○ Add a disk to SnapRAID                            Medium · requires a sync afterward
-  ○ Remove a disk (evacuate data first)               Medium · long-running copy
-  ○ Replace a healthy disk                            Medium
-  ○ Recover a failed data disk                        High · uses parity; recent changes may be lost
-  ○ Replace a parity disk                             High · array unprotected until resync
-  ○ Restore/relocate content files                    Medium
-  (items not yet implemented show "Preview / not implemented" and cannot be started)
+main  /etc/snapraid.conf  external · lossless round-trip ✔ · SnapRAID 13.0 · log tags ✔
+  Data    d1 /mnt/disk1 ✔   d2 /mnt/disk2 ⛔ missing   d3 /mnt/disk3 ✔
+  Parity  1 level → /mnt/par1/snapraid.parity ✔ (available ≥ largest data disk: margin 0.6 TB)
+  Content /var/snapraid.content ✔ · /mnt/disk1/snapraid.content ✔ (2 copies; minimum = levels + 1 = 2)
+  Not covered: excluded patterns (6) · nested mount /mnt/disk3/vm ⚠ · ▸ list
+  Schedule ⏸ suspended — d2 missing (anomaly; cannot be overridden by thresholds)
+  [Status] [Diff] [Scrub…] [Check…] [Sync…] disabled: "A data disk is missing. Syncing now would
+   record its files as deleted and destroy your ability to recover them."
+  Recovery is in Operations → Recovery readiness. There is no "repair all".
 ```
 
-### Wizard pattern (every operation)
+## Sync review (exceptional sync)
 ```
-1 Select target ─ 2 Preflight ─ 3 Plan preview ─ 4 Confirm ─ 5 Run ─ 6 Verify
-Step 3 shows:  targets by stable ID · exact config diffs · units to create · commands (argv)
-               · irreversible effects (verbatim list) · rollback: full | partial | none
-               · "This plan expires in 15 min or if any disk/mount changes."
-Step 4 (irreversible only):
-  Type the disk ID to confirm erasing it:
-  ata-ST8000VN004-2M2101_WSD1ABCD
-  [______________________________]   [Erase disk] (enabled only on exact match)
-Step 5: job console — phases with ✔/⟳/✖, live log (redacted), Cancel shown only during
-        phases marked safe; otherwise "This step cannot be interrupted safely."
+Sync suspended for array main: 1,000 removed files on d2 (threshold: 50, or 1% of a disk).
+Review every change ▸ by disk ▸ by type ▸ full list (paged, searchable)
+Fingerprint 7f3a…c1 · computed 14:20 · expires 15:20
+Limits: diff compares size, timestamp and inode only; excluded and nested-mount files are not listed.
+☐ Quiesce writers during sync (set pool branches read-only, optionally stop shares) ℹ
+[Approve this exact change set and sync]  — if any file changes before the sync starts,
+                                            the sync is refused and a new review is needed.
+```
+
+## Operations
+```
+Readiness first — every replacement and recovery starts with a read-only evaluation.
+  ○ Adopt existing disks (no formatting)                     Low
+  ○ Initialize a blank disk → opens Cockpit Storage, then returns here to adopt   ⛔ erases
+  ○ Retire / evacuate a disk                                 Medium · long copy
+  ○ Replace a healthy disk (upgrade)                         Medium
+  ○ Recover a failed data disk (SnapRAID)                    High
+  ○ Replace a failed parity disk                             High
+  ○ Restore / relocate content files                         Medium
+  ○ Replace a disk in a pool without parity                  evacuation only
+  ○ Multiple failed disks                                    High
+  (not yet implemented items show "Preview / not implemented" and cannot start)
+```
+
+### Adoption wizard (R2)
+```
+1 Select filesystems ─ 2 Inspect ─ 3 Conflicts ─ 4 Plan preview ─ 5 Apply ─ 6 Verify
+2 Inspect: ext4 · UUID 1a2b… · 3.1 TB used · owner/permissions sample · existing mount /mnt/disk1
+           (fstab line 14 — will be kept unchanged) · appears in: share "media", array main d1
+3 Conflicts: none | ⛔ same UUID on two devices | ⛔ path claimed by fstab and a unit |
+             ⚠ owned by another tool → inspect-only
+4 Plan: "No data, files, permissions or filesystem roots will be changed." Proposed changes listed
+        individually (fstab entry via UDisks2 if none exists · L1 guard on empty underlying dir).
+```
+
+### Recovery readiness report (R6)
+```
+Scenario: Recover failed data disk d2 (array main) → replacement ata-ST18000…_ABC1
+Verdict: ✔ READY — all verified prerequisites are satisfied. Recovery may still not restore everything.
+         (or ⛔ BLOCKED / ❓ INDETERMINATE, with the reasons first)
+Checks  C1 identity ✔ · C2 roles ✔ · C3 parity 1/1 accessible ✔ · C4 content 2 valid ✔ ·
+        C5 1 failed ≤ 1 parity ✔ · C6 last sync completed 2026-10-18 03:12 (high) ✔ ·
+        C7 changes on other disks: 1,204 added, 12 removed ⚠ · C8 replacement 18 TB ≥ 11.2 TB used ✔ ·
+        C9 /mnt/disk2-new mounted, UUID matches ✔ · C10 no competing jobs; cron entry found ⛔→ resolved ✔ ·
+        C11 not covered: 6 exclude rules, nested mount ⚠ · C12 replacement empty ✔
+Will not be recoverable: files written to d2 after 2026-10-18 03:12 · excluded files · …
+Assumptions: content copy /var/snapraid.content is the current one (matches job record)
+Planned steps (not executed): 1 suspend schedules … 5 snapraid -d d2 fix … 6 check -a … 8 sync = separate approval
+[Run optional verification (snapraid check, read-only, hours; stresses surviving disks)]
+[Create recovery plan] (re-evaluated automatically before it starts)
+This is an analysis, not a recovery, parity validation or proof of file integrity.
 ```
 
 ## Shares
-
 ```
-Shares                                              [+ New share] 
-┌──────────┬────────┬───────────────────┬──────────────┬─────────────┬───────────────┐
-│ Name     │ Proto  │ Path              │ Backing      │ Access      │ Managed by    │
-├──────────┼────────┼───────────────────┼──────────────┼─────────────┼───────────────┤
-│ media    │ SMB    │ /srv/pool/media   │ pool ✔       │ @media rw   │ this plugin   │
-│ backups  │ SMB    │ /mnt/disk3/bk     │ ⚠ single disk│ alice rw    │ File Sharing ↗│
-│ iso      │ NFS    │ /srv/pool/iso     │ pool ✔       │ 10.0.0.0/24 │ external      │
-└──────────┴────────┴───────────────────┴──────────────┴─────────────┴───────────────┘
+Name     Proto Path              Backing         Access       Managed by          Evidence
+media    SMB   /srv/media        pool ✔          @media rw    this plugin         marker + state
+backups  SMB   /mnt/disk3/bk     ⚠ single branch alice rw     File Sharing ↗      registry + include comment
+iso      NFS   /srv/media/iso    pool ✔          10.0.0.0/24  File Sharing ↗      /etc/cockpit-file-sharing.conf.json
+old      SMB   /srv/old          ✖ not mounted   —            unknown (read-only) registry, no tool evidence
+Conflicts: ⚠ "iso" and "media" export overlapping paths with different access models.
 Removing a share removes only its definition — files are never deleted.
 ```
 
 ## Schedules
-
 ```
-sync  (array main)   daily 03:00 ± 10 min   ⏸ SUSPENDED since 2026-10-18 03:00
-      Reason: diff found 1,000 removed files on d2 (threshold 50).  [Review diff…]
-scrub (array main)   weekly Sun 04:00, 8% per run, older than 10 days   ✔ next in 2 d
-Overlap: sync/scrub never run concurrently (shared array lock). Timeout: 12 h.
+sync  main   daily 02:51 ± 10 min   ⏸ SUSPENDED 2026-10-18 — reason: d2 missing (anomaly)
+scrub main   weekly                  ⏸ SUSPENDED (same array)
+Thresholds (main): removed > 50 · removed > 1% of a disk · updated > 500   [Change… (audited)]
+External schedulers detected: cron.d/snapraid-runner ⚠ — this plugin will not schedule array main
+Rejected syncs are never retried automatically.
 ```
 
 ## Settings & Diagnostics
 ```
-Dependencies & versions · Support tier: Tier 1 (Debian 13)
-Mount scheme for new pools: systemd units (recommended) ℹ
-Action history (filter by actor/object) · Job logs · journal for cpm-* units
-[Create diagnostic bundle…]  ☑ redact serials ☑ redact hostnames ☑ redact usernames/paths
+Dependencies & versions · Support tier · Reconciliation report [Run] (read-only)
+Action history · Job logs · Recovery journals · journal for csm-* units
+[Create diagnostic bundle…] ☑ redact serials ☑ hostnames ☑ usernames/paths
 ```
