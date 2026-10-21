@@ -1,57 +1,65 @@
 # Project status
 
-_Last updated: 2026-10-19 (M0)_
+_Last updated: 2026-10-19 (M0 closeout)_
 
 ## Current milestone
-**M0 — Discovery and architecture sign-off: complete, awaiting review.**
-No code exists. No host has been modified. Next milestone (M1) is **not authorized**.
+**M0 — Discovery and architecture: closeout complete, awaiting owner acceptance.**
+Documentation only. No code exists, no packages were installed, no host storage was touched.
+**M1 is not authorized.**
 
-## Repository state at M0 start
-- `main` @ `53df43c`: `LICENSE` (GPL-3.0), `CLAUDE.md` only.
-- `CLAUDE.md` referenced `docs/PRODUCT_SPEC.md`, `docs/ARCHITECTURE.md`,
-  `docs/SAFETY_AND_TESTING.md`, `docs/REFERENCES.md`, which were **missing** from the repo.
-  Copied verbatim from the claude.ai Project on branch `m0/discovery`.
+Branches: `m0/discovery` (original proposal) → `m0/closeout` (this closeout; PR to `main`, not merged).
 
-## M0 deliverables (branch `m0/discovery`)
-| # | Deliverable | Location |
+## Proposed final M0 acceptance criteria
+M0 is accepted when the owner confirms all of:
+1. ADR-0001…0010 exist with owner decisions Q2–Q7 recorded and statuses set (`docs/DECISIONS.md`).
+2. Repository contains no legacy product name or `cpm-` prefix except explicitly historical notes.
+3. Requirements R1–R6 each have coverage status, design artifacts, milestone and automated
+   tests (`docs/design/requirements-traceability.md`).
+4. Runtime branch loss design answers all six Q4 conditions, with tests RBL-01…14 and a
+   fail-closed fallback (`docs/design/runtime-branch-loss.md`).
+5. Sync guard specifies anomaly suspension, thresholds, exact diff fingerprint fields and their
+   limits, revalidation, no-retry, concurrency gap and quiesce option, audited threshold changes
+   (ADR-0005).
+6. Recovery simulation design defines checks, verdict rules, typed report contract, forbidden
+   commands and fixtures F01–F10 (`docs/design/recovery-simulation.md`), scheduled as M4 before
+   any destructive milestone.
+7. Disposable VM / loopback test approach with an enforced interlock (`docs/design/test-environment.md`).
+8. Plan engine states stable-identifier, readiness-gate, recovery-journal, reversibility and
+   reconciliation rules (`docs/design/plan-engine.md`).
+9. Version gaps closed or explicitly tracked (ADR-0002); Cockpit 337-vs-369 is a mandatory M1 test.
+10. Consistency checks pass: all Mermaid diagrams parse, all referenced docs exist, no
+    contradictions found in the final review (see PR description for the check log).
+
+## Unresolved risks (carried into M1+)
+| ID | Risk | Mitigation / owner of resolution |
 |---|---|---|
-| 1 | Backend language ADR | `docs/adr/0001-backend-language.md` |
-| — | Support matrix + version evidence | `docs/adr/0002-support-matrix.md` |
-| — | Privilege & job execution | `docs/adr/0003-privilege-and-execution-model.md` |
-| — | Mount ordering / pool units | `docs/adr/0004-mount-ordering-and-pool-units.md` |
-| — | SnapRAID integration & sync guard | `docs/adr/0005-snapraid-integration.md` |
-| — | Config ownership & shares | `docs/adr/0006-config-ownership-and-shares.md` |
-| 2 | Component diagram + typed API outline | `docs/design/components-and-api.md` |
-| 3 | Plan/job state machines + lock model | `docs/design/plan-engine.md` |
-| 4 | Privilege/threat model | `docs/design/threat-model.md` |
-| 5 | Per-milestone acceptance criteria & tests | `docs/design/milestones.md` |
-| 6 | UI wireframes (text) | `docs/design/ui-wireframes.md` |
-| — | Critique of unsafe assumptions | `docs/design/m0-critique.md` |
-| 7 | Skeleton | **Not created** — proposed below, pending approval |
+| U1 | Cockpit `pkg/lib` from 369 may misbehave on 337 (Debian 13) | Mandatory M1 test; fallback: pin an older `pkg/lib` or raise the minimum |
+| U2 | L1 immutable underlay may be unsupported or behave unexpectedly on some root filesystems | RBL-14 per target; fail-closed default where unverified |
+| U3 | Detection of wrong-device remount depends on a timer; exposure window exists | RBL-09 measures it; interval configurable; documented residual risk |
+| U4 | systemd behavior on device removal and for externally performed mounts unverified | RBL-07/09; timer backstop independent of it |
+| U5 | Sync TOCTOU between final diff and sync's own scan | D8 revalidation, undocumented `--gui-threshold-removes` when available, optional quiesce mode |
+| U6 | UDisks2 fstab configuration items may differ across 2.10.1 / 2.10.91 / 2.11.2 | M6 spike; fallback to our own atomic fstab append |
+| U7 | SnapRAID tag formats may change between versions (e.g., manpage vs source order for `scan:copy`) | per-version captured fixtures; unknown tags surfaced, not ignored |
+| U8 | No CI nested virtualization confirmed; T3/T4 may need an owner-provided disposable VM host | decide in M1 |
+| U9 | Clients and applications may treat invisible files on a lost branch as deletions | critical banner guidance; outside the plugin's control |
+| U10 | File Sharing could change its provenance markers in future versions | uncertain ownership ⇒ read-only; fixtures per File Sharing version |
 
-## Open questions for the owner
-- **Q1** Does a `pkg/lib` pinned from Cockpit 369 (starter-kit) work on Debian 13's Cockpit 337? (Answer in M1 by testing.)
-- **Q2** Product/package name: `cockpit-pool-manager` (project instructions) vs `cockpit-storage-manager` (repo). Proposal: package `cockpit-pool-manager`, prefix `cpm-`.
-- **Q3** ADR-0003 deviation: accept tiering option A (admin mode = root, server-side safety gates, delegated polkit mode deferred)?
-- **Q4** ADR-0004: on runtime branch loss, unmount pool (`BindsTo=`) or keep it up degraded with all jobs blocked? Proposal: keep up, block jobs.
-- **Q5** Source of truth for spec docs: repo `docs/` (proposal) or the claude.ai Project?
-- **Q6** Default sync-guard thresholds (removed > 50 files or > 1% per disk; updated > 500).
-- **Q7** Python ≥3.11 stdlib-only backend (ADR-0001) — accept?
-
-## Proposed M1 skeleton (not created)
+## Proposed M1 skeleton (not created; requires M1 authorization)
 ```
-package.json, build.js, tsconfig.json, Makefile        # from cockpit starter-kit pattern
-src/ui/{index.html,index.tsx,app.tsx,pages/*}          # PF6, React 18
+package.json, build.js, tsconfig.json, Makefile        # cockpit starter-kit pattern
+src/ui/{index.html,index.tsx,app.tsx,pages/*}          # PatternFly 6, React 18
 src/api/{client.ts,transport-cockpit.ts,transport-mock.ts,types.gen.ts}
 api/schema/*.json                                      # normative contracts
-backend/cpm_helper/{__main__.py,rpc.py,exec.py,errors.py,snapshot.py}
-backend/cpm_helper/adapters/{lsblk.py,findmnt.py,mountinfo.py,udev.py,smart.py}
+backend/csm_helper/{__main__.py,rpc.py,exec.py,errors.py,snapshot.py}
+backend/csm_helper/adapters/{lsblk.py,findmnt.py,mountinfo.py,udev.py,smart.py}
 backend/tests/{unit,fixtures}/
-mock/hosts/{healthy,degraded-missing-disk,partial-config,dup-uuid}.json
-packaging/debian/                                       # arch: all
-integration/README.md                                   # VM/loop harness (M2+)
-.github/workflows/ci.yml                                # lint, mypy, unit, build, container matrix
+mock/hosts/{healthy,degraded-missing-disk,partial-config,dup-uuid,pool-only,parity-only,multi}.json
+packaging/debian/                                      # arch: all; name cockpit-storage-manager
+integration/{README.md,interlock/}                     # test-host interlock (T0-tested in M1)
+.github/workflows/ci.yml                               # T0–T2
 ```
 
 ## Environment notes
-- M0 research workspace: Ubuntu 24.04 container, Python 3.13, Node 22, cargo present; no Cockpit, mergerfs, SnapRAID or Samba installed. No VM or loop-device capability verified yet — required for M2 integration tests.
+M0 workspace: Ubuntu 24.04 container, Python 3.13, Node 22; no KVM, Cockpit, mergerfs,
+SnapRAID or Samba installed. Research used shallow clones of upstream sources and distro
+package pages (listed in ADR-0002).

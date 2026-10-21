@@ -1,5 +1,9 @@
 # Architecture and technical contracts
 
+> **Authority (ADR-0009):** this repository file is authoritative. "Amendments — M0 closeout" at
+> the end is normative and supersedes earlier text where they differ. Accepted ADRs in
+> `docs/adr/` refine this document.
+
 ## High-level shape
 Cockpit package (React + TypeScript, PatternFly) → Cockpit bridge authenticated transport → small privileged helper/service API (Python or Rust; decision via ADR) → discovery/state parsers + validated declarative plan engine → well-defined Linux executables/systemd/managed snippets. Avoid a persistent daemon unless justified.
 
@@ -61,3 +65,36 @@ docs/                      # ADRs, threat model, UI workflows, operations
 
 ## Review gates
 API schema fixtures and fuzzing; test state transitions; fixture-based command parsing; disposable loopback integration; reboot persistence; privilege review; never run destructive tests against actual host disks.
+
+---
+
+## Amendments — M0 closeout (2026-10-19)
+- **Backend (ADR-0001):** Python ≥3.11, standard library only at runtime; `mypy --strict`, Ruff;
+  JSON Schema request validation; exactly one audited subprocess module (`exec.py`); strict
+  executable allowlist; no shell interpolation; typed state transitions.
+- **Privilege and authorization (ADR-0003, supersedes the polkit paragraph above):** viewer tier
+  (unprivileged, read-only), Cockpit administrative mode for privileged operations,
+  backend-enforced preflight and authorization, typed confirmation plus plan freshness for
+  destructive actions. Typed confirmation is a safety control, not a security boundary. No
+  privileged persistent D-Bus service; delegated-operator authorization is a future, separately
+  proposed feature.
+- **Data model (ADR-0008):** multiple `Pool`s (`pool_id`) and multiple `SnapraidArray`s
+  (`array_id` = config realpath) per host; relationships are derived links, not ownership.
+  New contract: `ReadinessReport` (`docs/design/recovery-simulation.md` §6).
+- **Discovery:** SnapRAID output is parsed from `--log ">&2"` tags on all supported versions
+  (12.2+), with per-version fixtures (ADR-0005 D1).
+- **Managed configuration (ADR-0006, ADR-0007):** existing fstab lines and units are never
+  modified; new persistent mounts for adopted filesystems are added as fstab entries through
+  UDisks2; no writes into data filesystem roots.
+- **Mount ordering (ADR-0004):** startup identity gate (`verify-pool`), immutable underlay
+  directories for branch and pool mountpoints, runtime branch guard (`=NC`, SnapRAID
+  suspension), periodic identity check, fail-closed fallback. mergerfs markers are not a control.
+- **Plans and jobs (`docs/design/plan-engine.md`):** stable identifiers only; readiness gate for
+  replacement/recovery; recovery journal; reversible-first actions with recorded undo; read-only
+  `state.reconcile`.
+- **Recovery feasibility (ADR-0010):** read-only readiness engine with a restricted executable
+  subset; mandatory and re-evaluated before recovery plans execute.
+- **Cockpit Storage (ADR-0007):** boundaries, `cockpit.jump("/storage")`, UDisks2 interop; no
+  import of Cockpit Storage internals.
+- **Testing:** `docs/design/test-environment.md` (tiers T0–T4, disposable-host interlock).
+- **Suggested tree:** unchanged except the backend package is `backend/csm_helper/`.

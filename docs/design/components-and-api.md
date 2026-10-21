@@ -1,6 +1,6 @@
 # Components and typed API outline
 
-Status: M0 proposal. Contracts below are an **outline**; the normative form will be
+Status: Accepted at M0 closeout (2026-10-19). Contracts below are an **outline**; the normative form will be
 JSON Schema files in `api/schema/` (M1), from which TypeScript types are generated and
 against which the Python helper validates every request and response.
 
@@ -14,6 +14,7 @@ flowchart TB
     MOCK["Mock transport<br/>(demo mode, fixtures)"]
     UI --> APIC
     APIC -. demo mode .-> MOCK
+    UI -. "cockpit.jump('/storage')" .-> CSTOR["Cockpit Storage page<br/>(separate package, UDisks2)"]
   end
 
   subgraph Bridge["cockpit-bridge (per session)"]
@@ -22,17 +23,21 @@ flowchart TB
 
   APIC -->|"rpc request (JSON)"| SPAWN
 
-  subgraph Helper["cpm-helper (Python, one-shot per request)"]
+  subgraph Helper["csm-helper (Python, one-shot per request)"]
     RPC["rpc dispatcher<br/>schema validation, version negotiation"]
     AUTHZ["authz + safety gates<br/>euid, tier, confirm token"]
     DISC["discovery<br/>(read-only)"]
-    PARSE["parsers<br/>fstab, mountinfo, snapraid.conf,<br/>snapraid tags/text, smb.conf, exports"]
+    PARSE["parsers<br/>fstab, mountinfo, snapraid.conf,<br/>snapraid log tags, smb.conf, exports"]
     MODEL["state model<br/>Device/FS/Mount/Pool/Array/Share"]
-    PLAN["plan engine<br/>build → validate → hash"]
-    LOCK["lock manager<br/>flock under /run/cockpit-pool-manager"]
+    PLAN["plan engine<br/>build → validate → hash<br/>reconcile (read-only)"]
+    READY["readiness engine<br/>read-only feasibility<br/>(restricted exec subset)"]
+    LOCK["lock manager<br/>flock under /run/cockpit-storage-manager"]
     EXEC["exec.py — ONLY subprocess site<br/>allowlist, argv arrays, env scrub,<br/>timeouts, output caps"]
-    STORE["state store<br/>/var/lib/cockpit-pool-manager<br/>state.json, plans/, jobs/, backups/"]
+    STORE["state store<br/>/var/lib/cockpit-storage-manager<br/>state.json, plans/, jobs/, backups/"]
     RPC --> AUTHZ --> DISC & PLAN
+    AUTHZ --> READY
+    READY --> MODEL
+    PLAN -->|"requires READY report<br/>for replace/recovery"| READY
     DISC --> PARSE --> MODEL
     PLAN --> MODEL
     PLAN --> LOCK
@@ -43,10 +48,11 @@ flowchart TB
   SPAWN --> RPC
 
   subgraph Jobs["systemd"]
-    JOB["cpm-job-&lt;id&gt; (transient, systemd-run)<br/>cpm-helper job-run &lt;id&gt;"]
-    TIMER["cpm-sync@ / cpm-scrub@ timers<br/>→ same job-run path"]
-    POOL["cpm-pool-&lt;id&gt;.service<br/>ExecStartPre=verify-pool"]
-    BMNT["branch .mount units<br/>What=/dev/disk/by-uuid/…"]
+    JOB["csm-job-&lt;id&gt; (transient, systemd-run)<br/>csm-helper job-run &lt;id&gt;"]
+    TIMER["csm-sync@ / csm-scrub@ timers<br/>→ same job-run path"]
+    POOL["csm-pool-&lt;id&gt;.service<br/>ExecStartPre=verify-pool"]
+    BMNT["branch mounts<br/>(fstab UUID= entries, via UDisks2)"]
+    GUARD["csm-branch-guard@ (oneshot, bound to mount)<br/>csm-branch-check.timer"]
   end
 
   PLAN -->|"job.start → systemd-run"| JOB
@@ -55,6 +61,8 @@ flowchart TB
   JOB --> EXEC
   JOB --> STORE
   BMNT --> POOL
+  BMNT --> GUARD
+  GUARD -->|"=NC via .mergerfs xattr,<br/>suspend SnapRAID"| POOL
 
   subgraph Host["Host tools (allowlisted absolute paths)"]
     T1["lsblk, blkid, findmnt, udevadm"]
@@ -62,9 +70,13 @@ flowchart TB
     T3["smartctl (optional)"]
     T4["mergerfs, snapraid (optional)"]
     T5["testparm, smbcontrol, net, exportfs (optional)"]
-    T6["mkfs.*, sgdisk/parted (M5+, irreversible tier only)"]
+    T6["mkfs.*, sgdisk/parted (M8+, irreversible tier only,<br/>only if Cockpit Storage handoff is insufficient)"]
+    T7["chattr/lsattr, getfattr/setfattr (M6+)"]
   end
-  EXEC --> T1 & T2 & T3 & T4 & T5 & T6
+  UDISKS["UDisks2 D-Bus<br/>(fstab configuration items)"]
+  EXEC --> T1 & T2 & T3 & T4 & T5 & T6 & T7
+  PLAN -.-> UDISKS
+  CSTOR -.-> UDISKS
 ```
 
 Key properties:
@@ -72,15 +84,18 @@ Key properties:
 - `exec.py` is the only module allowed to start processes (CI-enforced).
 - Discovery is side-effect free; nothing in `discovery/` imports `plan/` mutation code.
 - Mock transport replays recorded host snapshots so UI work and demos need no host.
+- The readiness engine's executable allowlist is a strict read-only subset (ADR-0010).
+- Cockpit Storage is reached only through `cockpit.jump("/storage")` and the shared UDisks2
+  state; none of its JavaScript is imported (ADR-0007).
 
 ## 2. Wire protocol
 
 ```jsonc
 // request (stdin)
-{ "api": "cpm/1", "id": "<client-uuid>", "method": "inventory.get", "params": { … } }
+{ "api": "csm/1", "id": "<client-uuid>", "method": "inventory.get", "params": { … } }
 // response (stdout)
-{ "api": "cpm/1", "id": "<client-uuid>", "ok": true,  "result": { … }, "warnings": [Warning] }
-{ "api": "cpm/1", "id": "<client-uuid>", "ok": false, "error": ApiError }
+{ "api": "csm/1", "id": "<client-uuid>", "ok": true,  "result": { … }, "warnings": [Warning] }
+{ "api": "csm/1", "id": "<client-uuid>", "ok": false, "error": ApiError }
 ```
 
 - Max request size 1 MiB; unknown fields rejected; unknown `api` major ⇒ `E_API_VERSION`.
@@ -138,52 +153,64 @@ type Support =
 type Ownership = "managed"|"external"|"foreign_tool"|"unknown";
 
 interface Pool {
-  pool_id: string; ownership: Ownership; mountpoint: string;
+  pool_id: string;                          // stable UUID; multiple pools per host
+  ownership: Ownership; mountpoint: string;
   configured_branches: Branch[]; live_branches?: Branch[];
   options: Record<string,string>; options_source: "fstab"|"unit"|"runtime-xattr";
   consistency: "consistent"|"drift"|"degraded"|"not-mounted";
+  guard: { l1_underlay: "verified"|"missing"|"unsupported"|"unknown";
+           mode: "degraded-allowed"|"fail-closed" };          // ADR-0004
+  links: Link[];                            // derived, e.g. branch is data disk of an array
   findings: Finding[];
 }
 interface Branch { path: string; mode: "RW"|"RO"|"NC"; minfreespace?: Bytes;
   mounted: boolean | null; fs_uuid?: string; identity: "verified"|"mismatch"|"unknown"; }
 
 interface SnapraidArray {
-  config_path: string; ownership: Ownership; version: SemVer; parser: "tags"|"text";
+  array_id: string;                         // realpath of the config file; multiple arrays per host
+  config_path: string; ownership: Ownership; version: SemVer;
   data: { name: string; path: string; mounted: boolean|null; fs_uuid?: string }[];
   parity: { level: 1|2|3|4|5|6; files: string[] }[];
   content: { path: string; failure_domain?: StableId; available: boolean }[];
   rules: { kind: "exclude"|"include"; pattern: string }[];
   extra_ignore_files: boolean | "unknown";  // .snapraidignore (≥14.0)
-  last_sync?: { at: string; result: "ok"|"error"|"interrupted"; evidence: string };
+  last_sync: { completed: boolean|null; at?: string;
+               confidence: "high"|"medium"|"low"|"none"; evidence: string };
   last_scrub?: { at: string; coverage_pct?: number };
   pending_diff?: DiffSummary;
   findings: Finding[];
   roundtrip_lossless: boolean;              // gate for takeover
+  schedule_state: "active"|"suspended"|"external"|"none"; suspend_reasons: Finding[];
+  links: Link[];
 }
+type Link = { kind: "branch-is-data-disk"; pool_id: string; array_id: string;
+              disk_name: string; fs_uuid: string };   // derived from fs UUID, never stored as ownership
 
 interface Finding { severity: "info"|"warning"|"critical"; code: string; message: string;
   subject: StableId | string; blocks: Capability[]; recovery?: string[]; }
-type Capability = "sync"|"scrub"|"fix"|"pool.mount"|"share.export"|"disk.remove"|"disk.init";
+type Capability = "sync"|"scrub"|"fix"|"pool.mount"|"share.export"|"disk.remove"|"disk.init"|"recovery";
 ```
 
 ## 4. Method catalogue
 
 | Method | Tier | Milestone | Notes |
 |---|---|---|---|
-| `system.capabilities` | viewer | M1 | tool paths, versions, support tier, euid, mock flag |
+| `system.capabilities` | viewer | M1 | tool paths, versions, support tier, euid, mock flag, Cockpit Storage present |
 | `inventory.get` | viewer (+root fields) | M1 | devices/partitions/filesystems/mounts, findings |
-| `pools.list` / `pools.get` | viewer | M2 | imported read-only, live vs configured |
-| `snapraid.config.get` | viewer* | M2 | *config file may need root to read |
-| `snapraid.status.get` | viewer* | M2 | runs `snapraid status` read-only |
-| `snapraid.diff.get` | admin | M4 | read-only, but reads all data disks; rate-limited |
-| `shares.list` | viewer* | M2 | Samba/NFS discovery + ownership |
-| `jobs.list` / `jobs.get` / `jobs.events` | viewer | M3 | |
-| `plan.create` | admin | M3 | returns `Plan` with `plan_hash`; nothing executed |
-| `plan.validate` | admin | M3 | re-runs preconditions against fresh snapshot |
-| `job.start` | admin (+confirm for irreversible) | M3 | `{plan_id, plan_hash, confirm_token?}` |
+| `pools.list` / `pools.get` | viewer | M2 | all pools; live vs configured; links |
+| `arrays.list` / `snapraid.config.get` | viewer* | M2 | all arrays by `array_id`; *config may need root |
+| `snapraid.status.get` | viewer* | M2 | `snapraid status --log ">&2"` read-only |
+| `snapraid.diff.get` | admin | M5 | read-only; reads all data disks; rate-limited |
+| `shares.list` | viewer* | M2 | Samba/NFS discovery + ownership evidence |
+| `state.reconcile` | viewer (+root fields) | M3 | read-only drift report (plan-engine §6) |
+| `jobs.list` / `jobs.get` / `jobs.events` / `jobs.journal` | viewer | M3 | |
+| `plan.create` / `plan.validate` | admin | M3 | nothing executed; recovery kinds need `readiness_report_id` |
+| `job.start` | admin (+confirm for irreversible) | M3 | `{plan_id, plan_hash, confirm_token?}`; re-runs readiness for recovery kinds |
 | `job.cancel` | admin | M3 | only if current phase `cancel: "safe"` |
-| `schedules.*` | admin | M4 | |
-| `diagnostics.bundle` | admin | M2 | sanitized: serials/hostnames redacted by default |
+| `readiness.evaluate` / `readiness.get` | admin (static tier partially viewer) | M4 | `ReadinessReport` (recovery-simulation §6) |
+| `sync.review` / `sync.approve` | admin | M5 | diff fingerprint review and one-shot exceptional-sync approval |
+| `schedules.*` / `guard.settings.*` | admin | M5 | thresholds changed only via audited settings plan |
+| `diagnostics.bundle` | admin | M2 | redacted by default |
 
 ## 5. Plan shape
 
@@ -198,7 +225,8 @@ interface Plan {
   irreversible_effects: string[];  // human sentences shown verbatim in confirm dialog
   postconditions: Postcondition[];
   rollback: "full" | "partial" | "none";
-  confirm: null | { kind: "typed"; expected: StableId; prompt: string };
+  confirm: null | { kind: "typed"; expected: StableId; prompt: string }; // safety control, not a security boundary (ADR-0003)
+  readiness_report_id?: string;    // required for replacement/retirement/evacuation/recovery kinds
   plan_hash: string;               // sha256 of canonical JSON of everything above
 }
 interface Phase { name: string; actions: Action[]; irreversible: boolean;

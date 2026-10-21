@@ -1,56 +1,78 @@
 # ADR-0006: Configuration ownership, shared files and share-service integration
 
-- Status: **Proposed** (M0, awaiting review). Share implementation is M6; this records constraints now so earlier milestones do not paint us into a corner.
+- Status: **Accepted** (M0 closeout, 2026-10-19; covers R2, R5). Share *writing* is M7; ownership detection and read-only display are M2.
 - Date: 2026-10-19
 
-## Ownership model
-Every discovered object has `ownership ∈ {managed, external, foreign_tool, unknown}`:
+## 1. Ownership model
+Every discovered object has `ownership ∈ {managed, external, foreign_tool, unknown}` plus the
+**evidence** that produced it:
 
-- `managed` — created by this plugin, recorded in `/var/lib/cockpit-pool-manager/state.json`
-  **and** carrying an in-file marker (`# managed-by: cockpit-pool-manager id=<uuid>`).
-  Both must agree; disagreement ⇒ `unknown`.
-- `external` — hand-written (fstab line, hand-written unit, smb.conf section).
-- `foreign_tool` — positively attributed to another tool (45Drives File Sharing,
-  OpenMediaVault, SnapRAID Daemon, …).
-- `unknown` — anything else. Read-only.
+- `managed` — recorded in `/var/lib/cockpit-storage-manager/state.json` **and** carrying our
+  in-file marker (`# managed-by: cockpit-storage-manager id=<uuid>`) where the format allows
+  comments. Both must agree; disagreement ⇒ `unknown`.
+- `foreign_tool` — positively attributed to another tool by **configuration provenance** (§3),
+  never by package presence alone.
+- `external` — administrator-written configuration with no tool provenance.
+- `unknown` — anything ambiguous. **Read-only.**
 
-Only `managed` objects are writable. Taking over an `external` object is an explicit
-"import" plan with backup, lossless round-trip proof and a diff preview.
+Only `managed` objects are writable. External and foreign objects stay read-only until a
+specific, designed and validated migration procedure exists for that object type; such a
+migration is its own plan with backup, lossless round-trip proof and diff preview.
 
-## Shared files we may have to touch
+## 2. Shared files
 | File | Policy |
 |---|---|
-| `/etc/fstab` | Never written for managed pools (ADR-0004 uses units). Read-only parser. |
-| `/etc/snapraid.conf` | SnapRAID has no verified include mechanism. Managed arrays use a plugin-owned config path passed with `-c`; importing an existing `/etc/snapraid.conf` is an explicit takeover with lossless round-trip. |
-| `/etc/samba/smb.conf` | See below. |
-| `/etc/exports` | Never written. Managed NFS exports go to `/etc/exports.d/cockpit-pool-manager.exports` (`exportfs` reads `exports.d` per nfs-utils; verify per target in M6). |
+| `/etc/fstab` | Existing lines are never modified or removed. New persistent mounts for adopted filesystems are added only through UDisks2's configuration interface (ADR-0007), after conflict checks, as part of a previewed plan. |
+| `/etc/snapraid.conf` and other array configs | Managed arrays use a plugin-owned config passed with `-c`. Taking over an existing config is an explicit lossless import. |
+| `/etc/samba/smb.conf`, Samba registry | §4. |
+| `/etc/exports`, other `exports.d` files | Never written. Managed exports go to `/etc/exports.d/cockpit-storage-manager.exports` (nfs-utils 2.8.3–2.9.1 on targets; `exports.d` support verified per target in M7). |
+| systemd units we did not create | Never written. |
 
-When a shared file must be written: lock → fingerprint (sha256 + mtime + inode) → backup
-→ minimal patch → validate (tool-specific) → temp file in same dir → `fsync` file →
-`rename` → `fsync` dir → re-read and compare → rollback from backup on failure.
+Writing protocol for any shared file: lock → fingerprint (sha256 + mtime + inode) → backup →
+minimal patch → tool validation → temp file in same directory → `fsync` → `rename` → `fsync`
+directory → re-read and compare → restore from backup on failure, reporting partial state.
 
-## Samba: verified facts about 45Drives File Sharing
-From its source: it manages shares with `net conf` (Samba **registry**), and inserts
-`include = registry` into the `[global]` section of `smb.conf` (with a "# inserted by
-cockpit-file-sharing" comment). NFS exports default to
-`/etc/exports.d/cockpit-file-sharing.exports`.
+## 3. 45Drives Cockpit File Sharing — provenance markers (verified in v4.6.3 source)
+- Samba: shares live in the Samba **registry** (`net conf`); File Sharing requires
+  `include = registry` in `[global]` and inserts it with an "inserted by cockpit-file-sharing"
+  comment.
+- NFS: exports file path comes from its settings file **`/etc/cockpit-file-sharing.conf.json`**
+  (`nfs.confPath`), default `/etc/exports.d/cockpit-file-sharing.exports`. The default must not
+  be assumed — the settings file is read to find the real path.
+- Package path `/usr/share/cockpit/file-sharing/` indicates installation, **not** ownership.
 
-## Decision (proposed)
-- **Detect** 45Drives via: installed package path `/usr/share/cockpit/file-sharing/`,
-  `include = registry` in smb.conf, non-empty `net conf list`, the exports.d file above.
-- If detected: our Shares page becomes **read-only + "Open in File Sharing"** for those
-  shares, and offers to create new shares *only* through our own mechanism if the owner
-  explicitly opts in. We never write the registry when 45Drives is present.
-- Our own Samba mechanism (M6 decision, two candidates, to be chosen after testing on targets):
-  1. dedicated `/etc/samba/cockpit-pool-manager.conf` pulled in by a single managed
-     `include =` line in `[global]` (one-time, confirmed edit of a shared file), or
-  2. Samba registry when no other registry user exists.
-  Every change validated with `testparm -s` against the full effective config, then
-  `smbcontrol all reload-config`, then verified by reading back effective shares.
+Attribution rules:
+| Evidence | Result |
+|---|---|
+| Registry shares present **and** `include = registry` carries the File Sharing comment, or the settings file exists | registry shares ⇒ `foreign_tool: 45drives-file-sharing` |
+| Registry shares present, no File Sharing evidence | `unknown` (registry may be used by another tool or an admin) |
+| Exports in the file named by File Sharing's settings | `foreign_tool: 45drives-file-sharing` |
+| Package installed but none of the above | no attribution; objects classified on their own evidence |
+| `smb.conf` sections / other exports with no tool evidence | `external` |
+
+## 4. Share management decisions
+- Before share management is enabled for a protocol, the plugin runs ownership detection and
+  shows the result; share writing is disabled while any object needed for the change is
+  `unknown`.
+- Shares owned by File Sharing are displayed as externally managed with an **"Open in File
+  Sharing"** handoff (`cockpit.jump` to its documented package path, if present). We never write
+  the registry while File Sharing evidence exists.
+- Our own Samba mechanism (M7 decision after target testing): a dedicated
+  `/etc/samba/cockpit-storage-manager.conf` included by one managed `include =` line (one-time,
+  confirmed edit), or the registry when no other registry user exists.
+- **Conflict detection before any change:** duplicate share names across smb.conf, registry
+  and our file; NFS exports of the same path or overlapping parent/child paths across all
+  `exports` sources; one path exported by both protocols with different access models; a share
+  path that is a bare mountpoint directory, a single branch of a pool, or outside any verified
+  mount.
+- **Validation and reload:** `testparm -s` on the full effective Samba configuration; for NFS,
+  our own parser validates the generated file (exportfs has no dry-run mode), then `exportfs -ra`
+  after backup; read back the effective configuration (`testparm -s`, `exportfs -v`). A failed reload restores the backup, reloads again, and reports the
+  exact resulting state (`partial` if the restore also fails).
 - Removing a share definition **never** touches share data.
-- Defaults: no guest access, no world-writable paths, path must be on a verified mounted
-  pool or explicitly confirmed plain mountpoint (with warning).
+- Defaults: no guest access, no world-writable paths, no wildcard NFS clients; each requires
+  separate confirmation.
 
 ## Licensing note
-45Drives File Sharing is GPL-3.0 — license-compatible with this repo (GPL-3.0), but per
-REFERENCES.md it is a research input only; no code is copied.
+45Drives File Sharing is GPL-3.0 — compatible with this repository — but per REFERENCES.md it is
+a research input only; no code is copied.

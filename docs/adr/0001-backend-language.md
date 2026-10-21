@@ -1,12 +1,17 @@
 # ADR-0001: Backend helper language — Python vs Rust
 
-- Status: **Proposed** (M0, awaiting review)
+- Status: **Accepted** (owner decision Q7, 2026-10-19)
 - Date: 2026-10-19
 - Deciders: project owner
 
+> Owner decision: Python ≥3.11, standard library only at runtime, `mypy --strict`, Ruff,
+> schema-based request validation, exactly one audited subprocess module, strict executable
+> allowlist, no shell interpolation, typed state transitions. Rust remains a future option for
+> isolated components **only if justified by measured requirements**.
+
 ## Context
 
-The privileged helper (`cpm-helper`) parses untrusted host state (`lsblk`, `findmnt`,
+The privileged helper (`csm-helper`) parses untrusted host state (`lsblk`, `findmnt`,
 `/proc/self/mountinfo`, `fstab`, `snapraid.conf`, SnapRAID log tags, Samba/NFS config),
 builds and validates plans, and executes a fixed allowlist of executables with argument
 arrays. Its failure modes that matter are **logic errors** (wrong device, stale plan,
@@ -62,4 +67,5 @@ behind the same JSON contract without rewriting the rest.
 - `+` Aligns with Cockpit's own bridge language; maintainers can read both.
 - `−` Type errors are caught by CI, not by the compiler; discipline must be enforced by gates.
 - `−` Python version drift across distros: floor of 3.11 is below every target
-  (Debian 13 ships 3.13). Re-verify Ubuntu 26.04/26.10 interpreter versions in the M1 CI matrix.
+  (verified 2026-10-19: Debian 13 python3 3.13.5; Ubuntu 26.04 and 26.10 python3 3.14.3).
+  CI tests the floor (3.11) and each target interpreter; 3.14 deprecations are CI warnings.

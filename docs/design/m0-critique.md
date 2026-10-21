@@ -1,5 +1,9 @@
 # M0 critique: unsafe or unverified assumptions
 
+Status: updated at M0 closeout (2026-10-19). Items keep their original wording; the
+**Status** line under each records how it was resolved. §"Closeout corrections" lists errors
+found in the M0-discovery drafts themselves.
+
 Each item: the assumption (where it appears), what upstream evidence says, and the
 proposed resolution. Severity reflects potential for data loss.
 
@@ -20,10 +24,13 @@ mountpoint is no longer empty. Consequences:
 - Related: SnapRAID does not cross filesystem/mount/subvolume boundaries inside a data disk
   (manual §16.1, warning only). Anything mounted *under* a data path is silently
   unprotected; discovery must surface that as a finding.
-*Resolution:* ADR-0004 (identity verifier + `.mergerfs.branch_mounts_here` markers),
-ADR-0005 (identity check precedes every sync). Discovery flags any non-empty directory
-underneath a branch mountpoint (requires a bind-mount peek of the underlying dir —
-implementation detail for M2: `findmnt` + `stat` comparisons; never unmount to look).
+*Resolution:* ADR-0004 L0–L3 (startup identity gate, immutable underlay directories, runtime
+branch guard, fail-closed fallback) and ADR-0005 D4 (identity check precedes every sync).
+Discovery flags any non-empty directory underneath a branch mountpoint (read-only private
+bind-mount peek; never unmount to look).
+**Status:** resolved in design; behavior to be proven by RBL-01…14 (`runtime-branch-loss.md`).
+*Correction:* the M0-discovery draft relied on `.mergerfs.branch_mounts_here`; those markers
+are read only during startup and only from mergerfs 2.41 — see Closeout corrections K1.
 
 ### C2. "SnapRAID will refuse to sync dangerous changes"
 *Evidence:* Built-in stops cover only extremes (`-E` all files gone, `-U` UUID changed,
@@ -75,22 +82,25 @@ Never fabricate from content-file mtime (scrub also rewrites it).
 only as defense in depth when feature-detected.
 
 ### H5. Text parsing of SnapRAID output is reliable
-*Evidence:* Structured tags only from 14.0; Tier-1 targets ship 12.2 and 13.0.
-*Resolution:* Dual adapter, per-version fixtures, "best-effort" labelling; safety decisions
-use exit codes and our own identity checks rather than parsed prose where possible.
+*Evidence (corrected at closeout):* `--log ">&2"` and `scan:*` tags exist in 12.2 and 13.0
+source, not only from 14.0; the manpage arrived in 14.0. The `scan:copy` field order in source
+is the reverse of the 14.x manpage.
+*Resolution:* single tag adapter for all supported versions with per-version captured fixtures;
+no decisions based on human text (ADR-0005 D1). **Status:** resolved.
 
 ## Medium
 
 ### M1. Repo/project naming mismatch
-Repo is `cockpit-storage-manager`; project instructions name the product
-`cockpit-pool-manager`. Package name, install paths (`/usr/share/cockpit/<name>`), unit
-prefixes and polkit IDs must be fixed **before** M1 because renaming later is a migration.
-Proposal: product/package `cockpit-pool-manager`, unit prefix `cpm-`. **Owner decision Q2.**
+Repo is `cockpit-storage-manager`; the claude.ai Project instructions named the product
+`cockpit-pool-manager` (historical). Package name, install paths (`/usr/share/cockpit/<name>`),
+unit prefixes and polkit IDs had to be fixed **before** M1 because renaming later is a migration.
+**Status:** resolved — owner decision Q2: `cockpit-storage-manager` everywhere, prefix `csm-`;
+repository audited, no legacy names remain outside historical notes.
 
 ### M2. CLAUDE.md referenced docs that did not exist in the repo
 The four spec docs lived only in the claude.ai Project. This branch copies them verbatim
-into `docs/` so the repository is self-contained. Future spec edits must be made in one
-place (proposal: the repo is the source of truth).
+into `docs/` so the repository is self-contained.
+**Status:** resolved — ADR-0009: the repository `docs/` is authoritative.
 
 ### M3. "Parity is snapshot-based" wording
 SnapRAID 15.0 introduces a `snapshot` option meaning *filesystem* snapshots. Using
@@ -113,3 +123,18 @@ PatternFly is MIT; mergerfs (ISC) and SnapRAID (GPL-3.0-or-later) are executed, 
 The starter-kit pins `pkg/lib` from Cockpit 369 while Debian 13 runs 337. Compatibility of
 that JS on a 337 shell is unverified. **Open question Q1**, answered in M1 by running the
 built package on each Tier-1 target.
+
+## Closeout corrections (errors in the M0-discovery drafts)
+- **K1** ADR-0004 draft: "`.mergerfs.branch_mounts_here` makes mergerfs treat a bare directory as
+  not mounted." Markers exist only from 2.41.0 and are read only in `fs_wait_for_mount.cpp`
+  (startup). No effect at runtime; absent on 2.40.2. Replaced by L1/L2 (ADR-0004).
+- **K2** ADR-0004 draft wrote `.csm-branch.json` into the root of each data filesystem —
+  contrary to R2 (no writes to data filesystem roots). Removed; identity = fs UUID + stable_id.
+- **K3** ADR-0002/0005 drafts: "structured tags only from 14.0". Wrong (see H5).
+- **K4** ADR-0004 draft: native `.mount` units for branches. Would trigger Cockpit Storage
+  "mismounted" warnings and its fstab fix (R4). Replaced by fstab entries via UDisks2 (ADR-0007).
+- **K5** ADR-0006 draft treated the installed File Sharing package path as an ownership signal
+  and assumed the default exports path. Replaced by provenance evidence including
+  `/etc/cockpit-file-sharing.conf.json` (R5).
+- **K6** ADR-0005 draft guard compared counts only for TOCTOU; owner requires invalidation on any
+  file-level change. Replaced by the full diff fingerprint (D6).

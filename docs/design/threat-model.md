@@ -1,7 +1,7 @@
 # Privilege and threat model
 
-Status: M0 proposal. Method: assets → trust boundaries → STRIDE-style threats → controls → residual risk.
-Re-review at M3 (first mutation) and before any release.
+Status: Accepted at M0 closeout (2026-10-19). Re-review at M3 (first mutation) and before any release.
+Method: assets → trust boundaries → STRIDE-style threats → controls → residual risk.
 
 ## 1. Assets (in priority order)
 1. **User data** on data disks (irreplaceable).
@@ -23,9 +23,9 @@ Re-review at M3 (first mutation) and before any release.
 
 ## 3. Trust boundaries
 - B1 Browser ↔ cockpit-ws/bridge (Cockpit's auth; not ours).
-- B2 Bridge ↔ `cpm-helper` (JSON over stdin/stdout; schema-validated).
-- B3 `cpm-helper` ↔ host tools (argv arrays; output parsed as untrusted).
-- B4 `cpm-helper` ↔ filesystem (paths from config and discovery are untrusted).
+- B2 Bridge ↔ `csm-helper` (JSON over stdin/stdout; schema-validated).
+- B3 `csm-helper` ↔ host tools (argv arrays; output parsed as untrusted).
+- B4 `csm-helper` ↔ filesystem (paths from config and discovery are untrusted).
 - B5 Share services ↔ network clients (Samba/NFS's own security model; we configure it).
 
 ## 4. Threats and controls
@@ -38,7 +38,7 @@ Re-review at M3 (first mutation) and before any release.
 | T4 | Colon/comma/`=` in mergerfs branch path breaks branch list | B3 | Reject `:` `,` `=` in managed branch paths (mergerfs branch syntax); imported pools with such paths are inspect-only | — |
 | T5 | Symlink/TOCTOU: path swapped between check and use (e.g., marker file, backup path, temp file) | B4 | `openat`-style traversal with `O_NOFOLLOW`; temp files via `O_EXCL` in target dir; state dirs root-owned 0700; verify `st_dev/st_ino` after open | Window remains for paths under user-writable share trees; we never write there except marker files at branch roots (root-owned) |
 | T6 | Wrong disk targeted (sdX reorder, duplicate UUID, cloned disks) | B4 | Targets by stable_id + expected serial/size/fs UUID; duplicate UUID ⇒ `E_AMBIGUOUS_IDENTITY`; re-check before irreversible phase | Two disks with identical serial and size (fake/cloned USB bridges) ⇒ treated as ambiguous, inspect-only |
-| T7 | Writes land on root fs under missing branch mount | B4 | ADR-0004 verifier + `.mergerfs.branch_mounts_here`; shares `Requires=` pool unit | Imported/external pools: we can warn, not prevent |
+| T7 | Writes land on root fs under a missing branch, or on a wrong disk remounted at a branch path | B4 | ADR-0004: L0 `verify-pool`; L1 immutable underlay dirs (branch + pool mountpoints); L2 branch guard sets `=NC` and suspends SnapRAID; check timer for wrong-device remounts; fail-closed fallback. (mergerfs markers are startup-only and ≥2.41 — not a control.) | Wrong-device window until detection; imported/external pools: warn only |
 | T8 | Mass deletion propagated into parity | — | ADR-0005 guard, thresholds, approved-diff hash, suspend timers | Deletions below threshold are synced by design |
 | T9 | Stale plan executed after hardware change | B2 | Snapshot fingerprint + TTL + per-phase revalidation | — |
 | T10 | Concurrent jobs / other admin edits | B4 | Lock model; fingerprinted writes; abort on drift | Other tools not using our locks (mitigated by fingerprints only) |
@@ -51,6 +51,9 @@ Re-review at M3 (first mutation) and before any release.
 | T17 | Misleading UI ("Protected", "Rollback succeeded") | — | Wording rules: parity freshness shown with timestamp; partial state is first-class | Human misreading |
 | T18 | Supply chain (npm deps in UI bundle) | — | Lockfile, minimal deps, SBOM, pinned Cockpit `pkg/lib` commit; Python runtime stdlib-only | Upstream compromise |
 | T19 | XSS in UI from hostile labels/filenames rendering | B1 | React escaping only; no `dangerouslySetInnerHTML`; lint rule | XSS in admin session = root (see Actors) — hence priority |
+| T20 | Readiness engine used as a side channel to mutate (bug or future change adds a mutating call) | B3 | Separate restricted exec allowlist; static test that no mutating tool is reachable; integration manifest proof | — |
+| T21 | Another management UI (Cockpit Storage, File Sharing) changes shared configuration under us | B4 | Provenance-based ownership; fingerprints before every write; UDisks2 for fstab entries so both UIs agree; read-only for foreign objects | Edits between our checks are detected, not prevented |
+| T22 | Operator mistakes typed confirmation for an access control | — | Docs/UI state it is a safety control (ADR-0003); real boundary is Cockpit admin mode | Root-equivalent session can bypass the plugin |
 
 ## 5. Explicit non-goals
 - Protecting the system from a Cockpit administrator acting maliciously.
@@ -60,6 +63,8 @@ Re-review at M3 (first mutation) and before any release.
 ## 6. Testable security invariants (become tests in M1+)
 - I1 No call path from `rpc` to `subprocess` except via `exec.run(tool_name, argv_list)`.
 - I2 Every mutating method returns `E_NOT_ROOT` when `euid != 0`.
-- I3 Every irreversible plan requires `confirm_token == expected stable_id`, checked server-side.
+- I3 Every irreversible plan requires `confirm_token == expected stable_id`, checked server-side. (Safety control against operator error, not a security boundary — ADR-0003.)
+- I6 No replacement/recovery plan can contain a `snapraid sync` action (static check over plan builders).
+- I7 The readiness engine cannot reach any mutating executable (static check).
 - I4 Every value written to a config file round-trips through its parser unchanged.
 - I5 Fuzzed JSON requests never produce an unhandled exception or a non-JSON stdout.

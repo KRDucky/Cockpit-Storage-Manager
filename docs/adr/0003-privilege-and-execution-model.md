@@ -1,6 +1,6 @@
 # ADR-0003: Privilege, authorization and job execution model
 
-- Status: **Proposed** (M0, awaiting review) — contains a **deviation from ARCHITECTURE.md** that needs owner sign-off (see "Deviation").
+- Status: **Accepted — Option A** (owner decision Q3, 2026-10-19). Supersedes the polkit paragraph of ARCHITECTURE.md (amended accordingly).
 - Date: 2026-10-19
 
 ## Context: what Cockpit actually gives us (verified in upstream source)
@@ -26,8 +26,8 @@ against the admin's own browser session** — that session is already root. The 
 ## Decision (proposed)
 
 ### Helper shape
-- One executable, `/usr/libexec/cockpit-pool-manager/cpm-helper`, invoked by
-  `cockpit.spawn` with **fixed argv** `["/usr/libexec/cockpit-pool-manager/cpm-helper", "rpc"]`.
+- One executable, `/usr/libexec/cockpit-storage-manager/csm-helper`, invoked by
+  `cockpit.spawn` with **fixed argv** `["/usr/libexec/cockpit-storage-manager/csm-helper", "rpc"]`.
   The request is a single JSON object on stdin; the response is a single JSON object on
   stdout. No user-controlled argv, ever.
 - Read-only methods are invoked **without** `superuser` first. The helper returns
@@ -42,9 +42,9 @@ against the admin's own browser session** — that session is already root. The 
 Sync/scrub/copy/evacuation can take hours. A job started over a `cockpit.spawn` channel
 dies with the websocket. Therefore:
 
-- `cpm-helper rpc` with `job.start` validates the plan, takes locks, writes
-  `/var/lib/cockpit-pool-manager/jobs/<job-id>/plan.json` (0600 root), then launches
-  `systemd-run --unit=cpm-job-<job-id> --property=… /usr/libexec/cockpit-pool-manager/cpm-helper job-run <job-id>`
+- `csm-helper rpc` with `job.start` validates the plan, takes locks, writes
+  `/var/lib/cockpit-storage-manager/jobs/<job-id>/plan.json` (0600 root), then launches
+  `systemd-run --unit=csm-job-<job-id> --property=… /usr/libexec/cockpit-storage-manager/csm-helper job-run <job-id>`
   and returns immediately. `<job-id>` is a server-generated UUID, never client input.
 - The job process owns the locks (see `docs/design/plan-engine.md`), appends a JSON-lines
   journal to `jobs/<id>/events.jsonl` (fsync per phase boundary), and logs to journald.
@@ -69,21 +69,32 @@ is killed and the result marked `output-truncated`), wall-clock timeout per call
 | Administrator | Cockpit admin mode | root helper | everything, **subject to safety gates** |
 | Irreversible | Administrator + typed confirmation | server-side check of `confirm_token` == expected stable ID and `plan_hash` | format/partition, parity replace, `fix`, forced flags |
 
-## Deviation from ARCHITECTURE.md (needs owner decision)
+## Resolution of the ARCHITECTURE.md deviation (owner decision Q3)
 
-ARCHITECTURE.md asks for "narrowly scoped polkit authorization" with "distinct permissions
-for status inspection, configuration changes, share updates, manual jobs and irreversible
-disk initialization". Given facts 2–3 above, per-action polkit prompts are not achievable
-from Cockpit without a polkit agent, and per-action polkit checks add nothing once the
-session is root. Options:
+ARCHITECTURE.md originally asked for per-action polkit permissions. Given facts 2–3 above,
+per-action polkit prompts are not achievable from Cockpit without a polkit agent, and
+per-action checks add nothing once the session is root.
 
-- **A (recommended for v1):** Tiers above. Ship polkit action definitions only for a
-  *future* delegated-operator mode (non-admin group allowed to run scrub/status via a
-  D-Bus-activated service with `polkit` rules granting `yes` to a configured group,
-  no interactive auth). Document plainly that admin mode = root.
-- **B:** Build the D-Bus-activated service now with non-interactive polkit rules per action.
-  More code and attack surface in M1 for a benefit that only applies to delegated users.
-- **C:** Rely on Cockpit admin mode only, no tiers. Rejected: loses viewer mode and server-side irreversible gate.
+**Accepted for v1 (Option A):**
+- Unprivileged read-only inspection (viewer tier).
+- Cockpit administrative mode for every privileged operation.
+- Backend-enforced preflight and authorization checks on every request, regardless of UI state.
+- Typed confirmations and plan-freshness checks for destructive actions.
+- **No privileged persistent D-Bus service** is introduced to recreate per-action polkit prompts.
+
+**Typed confirmation is a safety control, not a security boundary.** It defends an honest
+administrator against selecting the wrong disk or acting on a stale screen. It does not and
+cannot stop a root-equivalent session (or malicious JavaScript running in it) from bypassing
+the plugin and acting on the host directly. Documentation and UI copy must never describe it
+as access control.
+
+**Deferred:** a delegated-operator mode (a non-admin group allowed to run e.g. scrub/status)
+must be a separately proposed feature with its own ADR and threat-model review.
+
+Rejected options, for the record: (B) build a D-Bus-activated service with non-interactive
+polkit rules now — more code and attack surface for a benefit that applies only to delegated
+users; (C) Cockpit admin mode only, no tiers — loses viewer mode and the server-side
+irreversible gate.
 
 ## Consequences
 - Honest threat model (see `docs/design/threat-model.md`).
